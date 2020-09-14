@@ -127,9 +127,9 @@ end
 for (i, j) in zip(eachindex(W), 11:16)
     W[i] = j
 end
-@test B[1] === 11+12im
-@test B[2] === 13+14im
-@test B[3] === 15+16im
+@test B[1] === Complex{Int64}(11+12im)
+@test B[2] === Complex{Int64}(13+14im)
+@test B[3] === Complex{Int64}(15+16im)
 
 # ensure that reinterpret arrays aren't erroneously classified as strided
 let A = reshape(1:20, 5, 4)
