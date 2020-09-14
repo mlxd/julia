@@ -272,7 +272,7 @@ private:
     Constant *get_ptrdiff32(Constant *ptr, Constant *base) const;
     template<typename T>
     Constant *emit_offset_table(const std::vector<T*> &vars, StringRef name) const;
-    std::pair<Function *, GlobalVariable *> rewrite_alias(GlobalAlias *alias);
+    void rewrite_alias(GlobalAlias *alias);
 
     LLVMContext &ctx;
     Type *T_size;
@@ -697,7 +697,7 @@ Constant *CloneCtx::rewrite_gv_init(const Stack& stack)
 }
 
 // replace an alias to a function with a trampoline and (uninitialized) global variable slot
-std::pair<Function *, GlobalVariable *> CloneCtx::rewrite_alias(GlobalAlias *alias)
+void CloneCtx::rewrite_alias(GlobalAlias *alias)
 {
     Function *F = cast<Function>(alias->getAliasee());
     assert(!is_vector(F->getFunctionType()));
@@ -725,13 +725,17 @@ std::pair<Function *, GlobalVariable *> CloneCtx::rewrite_alias(GlobalAlias *ali
         Args.push_back(&arg);
     auto call = irbuilder.CreateCall(ptr, makeArrayRef(Args));
     call->setTailCallKind(CallInst::TCK_MustTail);
+    // musttail support is very bad on ARM, PPC, PPC64 (as of LLVM 3.9)
+    // Known failures includes vararg and sret.
+#if (defined(_CPU_ARM_) || defined(_CPU_PPC_) || defined(_CPU_PPC64_))
+    if (F->isVarArg())
+        abort();
+#endif
 
     if (F->getReturnType() == T_void)
         irbuilder.CreateRetVoid();
     else
         irbuilder.CreateRet(call);
-
-    return std::make_pair(trampoline, slot);
 }
 
 void CloneCtx::fix_gv_uses()
@@ -739,14 +743,16 @@ void CloneCtx::fix_gv_uses()
     auto single_pass = [&] (Function *orig_f) {
         bool changed = false;
         for (auto uses = ConstantUses<GlobalValue>(orig_f, M); !uses.done(); uses.next()) {
+            changed = true;
             auto &stack = uses.get_stack();
             auto info = uses.get_info();
             // We only support absolute pointer relocation.
             assert(info.samebits);
             GlobalVariable *val;
             if (auto alias = dyn_cast<GlobalAlias>(info.val)) {
-                Function *trampoline;
-                std::tie(trampoline, val) = rewrite_alias(alias);
+                rewrite_alias(alias);
+                uint32_t id;
+                std::tie(id, val) = get_reloc_slot(orig_f);
             }
             else {
                 val = cast<GlobalVariable>(info.val);
@@ -759,7 +765,6 @@ void CloneCtx::fix_gv_uses()
                 addr = ConstantExpr::getAdd(addr, ConstantInt::get(T_size, info.offset));
             gv_relocs.emplace_back(addr, fid);
             val->setInitializer(rewrite_gv_init(stack));
-            changed = true;
         }
         return changed;
     };
